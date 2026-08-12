@@ -1,260 +1,216 @@
 # spring-boot-k8s-gitops-flux-sops-workshop
 
-A minimal Java 21/Spring Boot service used to show how Kubernetes, GitOps, Flux and SOPS fit together.
-
-The application has two meaningful settings:
-
-```yaml
-demo:
-  token1: ...
-  token2: ...
-```
-
-During startup it logs these tokens to prove that the values came from the Kubernetes-mounted configuration file.
-
-This is intentionally wrong for production. Real applications must not print secrets. Here the log line is a workshop probe.
-
 ## References
 
-* [Spring Boot documentation](https://docs.spring.io/spring-boot/)
-* [Flux Kustomization documentation](https://fluxcd.io/flux/components/kustomize/kustomizations/)
-* [Flux SOPS guide](https://fluxcd.io/flux/guides/mozilla-sops/)
-* [SOPS project](https://github.com/getsops/sops)
-* [age project](https://age-encryption.org/)
-* [Kubernetes Secrets documentation](https://kubernetes.io/docs/concepts/configuration/secret/)
+* prerequisite workshops
+  * [SOPS and age key workshop](https://github.com/mtumilowicz/sops-age-key-workshop)
+  * [Kustomize workshop](https://github.com/mtumilowicz/kustomize-workshop)
+* [Spring Boot external configuration](https://docs.spring.io/spring-boot/reference/features/external-config.html)
+* [Flux GitRepository](https://fluxcd.io/flux/components/source/gitrepositories/)
+* [Flux Kustomization](https://fluxcd.io/flux/components/kustomize/kustomizations/)
+* [Flux SOPS decryption](https://fluxcd.io/flux/guides/mozilla-sops/)
+* [Kubernetes Secret volumes](https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod)
 
-## Core idea
+## Workshop warning
 
-* Kubernetes
-  * runs the pod
-  * stores the runtime Secret
-  * mounts the Secret as `/config/application.yml`
-  * does not understand SOPS encryption
-* Spring Boot
-  * starts from the container image
-  * loads normal classpath `application.yml`
-  * also loads `/config/application.yml` because the Deployment sets `SPRING_CONFIG_ADDITIONAL_LOCATION=file:/config/`
-  * binds `demo.token1` and `demo.token2`
-* SOPS
-  * encrypts secret values before they enter Git
-  * leaves Kubernetes metadata readable enough for Kustomize and Flux to process the file
-  * uses the workshop age public key for encryption
-* Flux
-  * watches the GitHub repository
-  * reads the Kustomize overlay
-  * decrypts `secret.enc.yaml` using the age private key stored in the cluster
-  * applies the decrypted Kubernetes Secret and Deployment
+* the application logs its configured tokens to make the complete configuration path observable
+* the repository commits disposable age private identities in Kubernetes Secret manifests
+* both practices are limited to this workshop
+* production applications must not log secrets or commit private identities
 
-The important distinction is that Kubernetes does not decrypt SOPS files. Flux does.
+## Purpose
 
-## Why Flux is present
-
-Without Flux, a human or script must decrypt before applying:
+This workshop connects concepts introduced separately in the prerequisite
+workshops:
 
 ```text
-Git encrypted secret.enc.yaml
-  -> sops -d
-  -> plaintext Kubernetes Secret
-  -> kubectl apply
-  -> pod mount
+GitRepository
+  -> Flux source-controller fetches the repository
+  -> Flux kustomize-controller builds an environment overlay
+  -> SOPS decrypts the application Secret during reconciliation
+  -> Flux applies the Kubernetes resources
+  -> kubelet mounts application.yml from the Secret
+  -> Spring Boot loads and binds the external configuration
 ```
 
-With Flux:
+The important boundary is between encrypted Git state and runtime state:
 
-```text
-Git encrypted secret.enc.yaml
-  -> Flux source-controller fetches Git
-  -> Flux kustomize-controller decrypts with SOPS
-  -> Flux applies plaintext Secret to the Kubernetes API
-  -> kubelet mounts the Secret into the pod
-  -> Spring Boot reads /config/application.yml
-```
+* Git contains a SOPS-encrypted Kubernetes Secret
+* Flux performs decryption inside the reconciliation process
+* Kubernetes receives an ordinary Secret
+* the pod receives a plaintext file mounted from that Secret
+* Spring Boot does not interact with SOPS or age
 
-That second path is the GitOps model: the cluster reconciles Git state instead of relying on a local operator command.
-
-## Project layout
+## Project structure
 
 ```text
 src/main/java/                         Spring Boot application
-src/main/resources/application.yml     local fallback config
-src/test/java/                         Docker Desktop Kubernetes + Flux test
-gitops/base/                           shared Kubernetes Deployment and Service
-gitops/overlays/dev/                   dev Namespace, patch, .sops.yaml and SOPS Secret
-gitops/overlays/prod/                  prod Namespace, patch, .sops.yaml and SOPS Secret
-gitops/clusters/dev/                   dev Flux wiring
-gitops/clusters/prod/                  prod Flux wiring
-gitops/age/                            workshop age keypair
-scripts/                               key generation and SOPS encryption helpers
+src/main/resources/application.yml     local fallback values
+src/test/java/                         Docker Desktop integration test
+gitops/base/                           shared Deployment and Service
+gitops/overlays/dev/                   dev Namespace, patch, policy and Secret
+gitops/overlays/prod/                  prod Namespace, patch, policy and Secret
+gitops/clusters/dev/                   dev Flux source, reconciliation and key bootstrap
+gitops/clusters/prod/                  prod Flux source, reconciliation and key bootstrap
+scripts/                               age-key generation and SOPS helpers
 ```
 
-## Secret handling model
+## Spring Boot configuration loading
 
-The encrypted Secret is shaped like this after SOPS encryption:
+The classpath configuration supplies local fallback values:
 
 ```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: spring-boot-k8s-gitops-flux-sops-workshop-config
-type: Opaque
+demo:
+  token1: local-workshop-token1
+  token2: local-workshop-token2
+```
+
+The Deployment adds an external configuration directory:
+
+```yaml
+env:
+  - name: SPRING_CONFIG_ADDITIONAL_LOCATION
+    value: file:/config/
+```
+
+`SPRING_CONFIG_ADDITIONAL_LOCATION` adds this directory without replacing the
+default Spring Boot locations. Configuration loaded from `/config/` has higher
+precedence than the packaged classpath file. The trailing `/` identifies a
+directory, from which Spring Boot loads `application.yml`.
+
+`DemoTokenProperties` binds the resulting `demo.token1` and `demo.token2`
+values. Startup fails when either value is empty. `StartupTokenLogger` records
+the active profile and resolved values as the workshop's end-to-end probe.
+
+## Secret-to-file mapping
+
+Each encrypted manifest represents a Kubernetes Secret with one key:
+
+```yaml
 stringData:
   application.yml: ENC[...]
-sops:
-  ...
 ```
 
-After Flux decrypts and applies it, Kubernetes mounts the Secret key as this file:
-
-```text
-/config/application.yml
-```
-
-The decrypted file content is:
+The Deployment selects that key and mounts it as a file:
 
 ```yaml
-demo:
-  token1: dev-workshop-token1
-  token2: dev-workshop-token2
+volumes:
+  - name: application-config
+    secret:
+      secretName: spring-boot-k8s-gitops-flux-sops-workshop-config
+      items:
+        - key: application.yml
+          path: application.yml
 ```
-
-or:
 
 ```yaml
-demo:
-  token1: prod-workshop-token1
-  token2: prod-workshop-token2
+volumeMounts:
+  - name: application-config
+    mountPath: /config
+    readOnly: true
 ```
 
-depending on the overlay.
-
-Each overlay has its own SOPS policy file:
+The mapping is therefore:
 
 ```text
-gitops/overlays/dev/.sops.yaml
-gitops/overlays/prod/.sops.yaml
+Secret.data[application.yml] -> /config/application.yml -> Spring Environment
 ```
 
-This project uses separate age keys for dev and prod:
+The volume is read-only from the container's perspective. Updating the Secret
+may update the mounted file, but this application reads and validates the
+properties during startup. The workshop restarts the Deployment before checking
+the resolved values.
+
+## Flux source and reconciliation
+
+Each environment defines two Flux resources in `flux-system`:
+
+* `GitRepository`
+  * polls the `main` branch of this GitHub repository every 30 seconds
+  * produces the source artifact consumed by the environment reconciliation
+* `Kustomization`
+  * selects the corresponding overlay from that artifact
+  * decrypts SOPS resources with the referenced age identity Secret
+  * builds and applies the resources
+  * waits for applied resources to become ready
+  * removes previously managed resources that disappear from Git because
+    `prune: true`
+
+The Flux `Kustomization` is a reconciliation object. It is distinct from the
+`kustomization.yaml` file in the selected overlay:
 
 ```text
-gitops/overlays/dev/.sops.yaml   -> dev age public key
-gitops/overlays/prod/.sops.yaml  -> prod age public key
+Flux Kustomization.spec.path
+  -> directory in the GitRepository artifact
+  -> kustomization.yaml
+  -> rendered Kubernetes resources
 ```
 
-## Workshop age key
+Flux periodically compares the declared Git state with cluster state. Manual
+changes to managed resources can therefore be corrected on a later
+reconciliation. A failed reconciliation is retried every 10 seconds, and one
+attempt has a three-minute timeout.
 
-* to better understand sop age key, refer to: https://github.com/mtumilowicz/sops-age-key-workshop
+## Dev and prod wiring
 
-This project intentionally commits the age private keys inside the Flux bootstrap Secret manifests:
+The environments use the same base but independent namespaces, profiles,
+encrypted Secrets and decryption identities:
+
+| Setting | dev | prod |
+| --- | --- | --- |
+| overlay | `gitops/overlays/dev` | `gitops/overlays/prod` |
+| namespace suffix | `-dev` | `-prod` |
+| Spring profile | `dev` | `prod` |
+| Flux source | `spring-boot-k8s-gitops-flux-sops-workshop-dev` | `spring-boot-k8s-gitops-flux-sops-workshop-prod` |
+| Flux reconciliation | `spring-boot-k8s-gitops-flux-sops-workshop-dev` | `spring-boot-k8s-gitops-flux-sops-workshop-prod` |
+| decryption Secret | `k8s-plain-secrets-dev` | `k8s-plain-secrets-prod` |
+| encrypted manifest | `gitops/overlays/dev/secret.enc.yaml` | `gitops/overlays/prod/secret.enc.yaml` |
+
+Each overlay-local `.sops.yaml` contains that environment's Flux recipient and
+a developer recipient. Each committed encrypted file records the recipients
+used when it was encrypted.
+
+The decryption Secret must exist before Flux can decrypt the application
+Secret. This repository resolves that bootstrap dependency by including a
+plaintext age identity manifest in each cluster directory:
 
 ```text
-gitops/clusters/dev/flux-sops-age-key-bootstrap.yaml
-gitops/clusters/prod/flux-sops-age-key-bootstrap.yaml
+kubectl apply -k gitops/clusters/<environment>
+  -> creates the age identity Secret in flux-system
+  -> creates the GitRepository
+  -> creates the Flux Kustomization
+  -> reconciliation can decrypt the application Secret
 ```
 
-That is only acceptable because this repository is a workshop/demo. In a real repository:
+This ordering is conceptual. Kubernetes accepts the three resources in one
+apply operation, and Flux retries reconciliation until its referenced Secret is
+available.
 
-* commit only the public key
-* store the private key outside Git
-* inject the private key into the cluster through a secure bootstrap path
-* restrict who can decrypt production secrets
+## Integration test
 
-## How Flux gets the age private key
-
-Flux does not read age key files directly during normal reconciliation. Flux reads Kubernetes Secrets from its own namespace.
-
-The dev Flux Kustomization references:
-
-```yaml
-decryption:
-  provider: sops
-  secretRef:
-    name: k8s-plain-secrets-dev
-```
-
-The prod Flux Kustomization references:
-
-```yaml
-decryption:
-  provider: sops
-  secretRef:
-    name: k8s-plain-secrets-prod
-```
-
-That means Flux expects these Secrets to exist:
+`./gradlew test` is an integration test against Docker Desktop Kubernetes. The
+Gradle test task first builds the application JAR and the local image:
 
 ```text
-namespace: flux-system
-name: k8s-plain-secrets-dev
-key: identity.agekey
-
-namespace: flux-system
-name: k8s-plain-secrets-prod
-key: identity.agekey
+spring-boot-k8s-gitops-flux-sops-workshop:latest
 ```
 
-The `k8s-plain-secrets-*` Secrets themselves are not SOPS-encrypted in this workshop. They are bootstrap material. When `kubectl apply` sends a Secret with `stringData`, the Kubernetes API server converts that plaintext value into the Secret's `data` field. That conversion is only base64 encoding, not encryption.
+The Deployment uses `imagePullPolicy: Never`. Docker Desktop Kubernetes must
+therefore be able to use that locally built image; no registry push is involved
+for the image.
 
-So there is no chicken-and-egg problem in this project:
-
-```text
-kubectl applies plaintext bootstrap Secret
-  -> Kubernetes stores flux-system/k8s-plain-secrets-dev
-  -> Kubernetes stores flux-system/k8s-plain-secrets-prod
-  -> Flux reads the matching Secret for each environment
-  -> Flux decrypts SOPS-encrypted application Secrets
-```
-
-There would be a chicken-and-egg problem if `flux-sops-age-key-bootstrap.yaml` itself were SOPS-encrypted and Flux needed the same Secret to decrypt it.
-
-In this workshop project, the Secret is committed as normal cluster bootstrap YAML:
-
-```text
-dev age private key
-  -> copied into gitops/clusters/dev/flux-sops-age-key-bootstrap.yaml
-prod age private key
-  -> copied into gitops/clusters/prod/flux-sops-age-key-bootstrap.yaml
-  -> kubectl apply -k gitops/clusters/dev
-  -> kubectl apply -k gitops/clusters/prod
-  -> Kubernetes stores flux-system/k8s-plain-secrets-dev
-  -> Kubernetes stores flux-system/k8s-plain-secrets-prod
-  -> Flux decrypts gitops/overlays/dev/secret.enc.yaml
-  -> Flux decrypts gitops/overlays/prod/secret.enc.yaml
-```
-
-This is intentionally simple and intentionally insecure. It keeps the whole workshop self-contained. The important conceptual point is that Flux receives ordinary Kubernetes Secrets named `k8s-plain-secrets-dev` and `k8s-plain-secrets-prod`; the source of those Secrets is a bootstrap decision.
-
-In a real system, `age-key.txt` should not be committed. Common delivery options are:
-
-* create the Flux age-key Secrets once during cluster bootstrap from an operator machine
-* inject it from a cloud secret manager, for example AWS Secrets Manager, Azure Key Vault, Google Secret Manager or HashiCorp Vault
-* let the platform bootstrap process create it before Flux starts reconciling application manifests
-* use separate age keys per environment or cluster, so dev cannot decrypt prod secrets
-
-The key point is ownership: Git contains encrypted application secrets, while the cluster receives the SOPS decryption identity through a separate trusted bootstrap channel.
-
-Put each environment's age public key into its overlay-local SOPS policy file:
-
-```text
-dev public key  -> gitops/overlays/dev/.sops.yaml
-prod public key -> gitops/overlays/prod/.sops.yaml
-```
-
-## Docker Desktop test model
-
-`./gradlew test` is intentionally an integration test.
-
-It assumes:
+### Prerequisites
 
 * Docker Desktop is running
 * Docker Desktop Kubernetes is enabled
-* current Kubernetes context is `docker-desktop`
+* the current Kubernetes context is `docker-desktop`
 * `kubectl` is installed
-* `flux` CLI is installed
-* `sops` and `age-keygen` were used to generate real encrypted secrets
-* this repository has been pushed to `https://github.com/mtumilowicz/spring-boot-k8s-gitops-flux-sops-workshop.git` on branch `main`
+* the Flux CLI is installed
+* Flux controllers and CRDs are already installed in the cluster
+* this repository is pushed to the configured GitHub URL on branch `main`
+* the committed encrypted Secrets match the bootstrap age identities
 
-Verify the required Kubernetes tools:
+Verify the client tools and context:
 
 ```bash
 kubectl version --client
@@ -262,23 +218,29 @@ kubectl config current-context
 flux --version
 ```
 
-Expected Kubernetes context:
+Expected context:
 
 ```text
 docker-desktop
 ```
 
+The test does not install Flux. Install it before running the test if the
+cluster does not already contain Flux:
+
+```bash
+flux install
+```
+
+### Test flow
+
 The test:
 
-* builds the local image `spring-boot-k8s-gitops-flux-sops-workshop:latest`
-* installs Flux into Docker Desktop Kubernetes if `flux-system` is missing
-* applies the Flux SOPS age Secret, sources and Kustomizations from `gitops/clusters/dev` and `gitops/clusters/prod`
-* waits for Flux to reconcile dev and prod
-* waits for the Kubernetes Deployments
-* reads pod logs
-* verifies:
-  * dev logs `demo.token1=dev-workshop-token1` and `demo.token2=dev-workshop-token2`
-  * prod logs `demo.token1=prod-workshop-token1` and `demo.token2=prod-workshop-token2`
+* applies `gitops/clusters/dev` and `gitops/clusters/prod`
+* requests immediate reconciliation of each Flux Kustomization and its source
+* restarts each Deployment
+* waits for each rollout
+* reads the application logs
+* verifies the environment profile and both environment-specific tokens
 
 Run:
 
@@ -286,14 +248,21 @@ Run:
 ./gradlew test
 ```
 
-This command mutates the local Docker Desktop cluster. On success, the test deletes the app namespaces and Flux custom resources it owns. It does not uninstall Flux.
+Flux fetches manifests from the configured GitHub repository. Uncommitted local
+manifest changes are not part of that source artifact and are not exercised by
+the test. The application image is the exception: Gradle builds it directly in
+the local Docker Desktop image store.
 
-## Why the test reads logs
+After the test, cleanup deletes the two Flux Kustomizations, two GitRepository
+resources and two application namespaces. It leaves the Flux installation and
+the two bootstrap age identity Secrets in `flux-system`.
 
-The goal is not to test a REST endpoint. The goal is to verify the configuration supply chain:
+The log assertions prove this complete path:
 
 ```text
-encrypted Git file -> Flux SOPS decryption -> Kubernetes Secret -> mounted file -> Spring Boot property
+encrypted Git value
+  -> Flux decryption
+  -> Kubernetes Secret
+  -> mounted application.yml
+  -> Spring Boot property binding
 ```
-
-The startup log is the smallest observable proof that the tokens reached Spring Boot through that path.
