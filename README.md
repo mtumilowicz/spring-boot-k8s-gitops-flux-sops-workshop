@@ -78,10 +78,6 @@
   * the additional location preserves Spring Boot's default locations
   * `/config/application.yml` takes precedence over the packaged file
   * the trailing `/` identifies `/config/` as a directory
-* property binding
-  * `DemoTokenProperties` binds `demo.token1` and `demo.token2`
-  * startup fails when either property is empty
-  * `StartupTokenLogger` records the active profile and resolved values
 
 ## Secret mount
 
@@ -119,8 +115,6 @@
     -> Spring Environment
     -> DemoTokenProperties
   ```
-
-* the test restarts the Deployment before inspecting the startup values
 
 ## Flux reconciliation
 
@@ -182,12 +176,6 @@
 
 ## Integration test
 
-* characteristics
-  * `./gradlew test` runs against Docker Desktop Kubernetes
-  * Gradle builds the JAR and local Docker image before running the test
-  * the image is `spring-boot-k8s-gitops-flux-sops-workshop:latest`
-  * `imagePullPolicy: Never` makes Kubernetes use the local image
-  * the test does not install Flux
 * prerequisites
   * Docker Desktop is running
   * Docker Desktop Kubernetes is enabled
