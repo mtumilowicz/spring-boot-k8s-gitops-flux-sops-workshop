@@ -10,3 +10,7 @@ resources:
 
 patches:
   - path: patch-deployment.yaml
+
+images:
+  - name: spring-boot-k8s-gitops-flux-sops-workshop
+    newTag: 1.0.0

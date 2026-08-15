@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: spring-boot-k8s-gitops-flux-sops-workshop
-          image: spring-boot-k8s-gitops-flux-sops-workshop:latest
+          image: spring-boot-k8s-gitops-flux-sops-workshop:must-be-set-by-overlay
           imagePullPolicy: Never
           ports:
             - name: http
@@ -24,14 +24,21 @@ spec:
           env:
             - name: SPRING_CONFIG_ADDITIONAL_LOCATION
               value: "file:/config/"
+            - name: DEMO_TOKEN1
+              valueFrom:
+                secretKeyRef:
+                  name: spring-boot-k8s-gitops-flux-sops-workshop-secrets
+                  key: demo-token1
+            - name: DEMO_TOKEN2
+              valueFrom:
+                secretKeyRef:
+                  name: spring-boot-k8s-gitops-flux-sops-workshop-secrets
+                  key: demo-token2
           volumeMounts:
             - name: application-config
               mountPath: /config
               readOnly: true
       volumes:
         - name: application-config
-          secret:
-            secretName: spring-boot-k8s-gitops-flux-sops-workshop-config
-            items:
-              - key: application.yml
-                path: application.yml
+          configMap:
+            name: spring-boot-k8s-gitops-flux-sops-workshop-config

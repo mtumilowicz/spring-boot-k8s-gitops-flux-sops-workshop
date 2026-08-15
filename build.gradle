@@ -47,6 +47,8 @@ tasks.register('dockerBuildImage', Exec) {
             'build',
             '--tag',
             'spring-boot-k8s-gitops-flux-sops-workshop:latest',
+            '--tag',
+            'spring-boot-k8s-gitops-flux-sops-workshop:1.0.0',
             '.'
 }
 

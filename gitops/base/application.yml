@@ -1,0 +1,15 @@
+# Default profile: prod-shaped template.
+demo:
+  token1: "<to_be_replaced>"
+  token2: "<to_be_replaced>"
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+
+# Local-only overrides.
+demo:
+  token1: "local-workshop-token1"
+  token2: "local-workshop-token2"
