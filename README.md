@@ -38,49 +38,6 @@
   * the environment variables override the corresponding `<to_be_replaced>` values
   * `DemoTokenProperties` binds the resolved `demo` configuration namespace
 
-## Environment model
-
-| Concern | dev | prod |
-| --- | --- | --- |
-| overlay | `gitops/overlays/dev` | `gitops/overlays/prod` |
-| namespace | `spring-boot-k8s-gitops-flux-sops-workshop-dev` | `spring-boot-k8s-gitops-flux-sops-workshop-prod` |
-| Spring profile | `dev` | `prod` |
-| image tag | `latest` | `1.0.0` |
-| encrypted secrets | `gitops/overlays/dev/secret.enc.yaml` | `gitops/overlays/prod/secret.enc.yaml` |
-| decryption identity Secret | `k8s-plain-secrets-dev` | `k8s-plain-secrets-prod` |
-
-The base defines the shared application configuration, Deployment and Service.
-Each overlay owns only its namespace, profile, image tag and encrypted secret
-values.
-
-The base uses the sentinel image tag `must-be-set-by-overlay`. Each deployable
-overlay must replace it with its desired tag. This keeps release versions out of
-the base and makes a missing overlay override fail during Pod startup.
-
-## Project structure
-
-```text
-.
-├── .run/                         shared IntelliJ local run configuration
-├── src/
-│   ├── main/                     Spring Boot application
-│   └── test/                     Docker Desktop integration test
-├── gitops/
-│   ├── base/                     application.yml and shared Kubernetes resources
-│   ├── overlays/
-│   │   ├── dev/                  dev profile and encrypted secrets
-│   │   └── prod/                 prod profile and encrypted secrets
-│   └── clusters/
-│       ├── dev/                  dev Flux connection and identity bootstrap
-│       └── prod/                 prod Flux connection and identity bootstrap
-└── scripts/                      workshop key and encryption helpers
-```
-
-## Workshop constraints
-
-* the application logs the configured tokens to make the delivery path observable
-* production applications must not log secrets
-
 ## Local run
 
 The shared IntelliJ configuration points Spring Boot to `gitops/base` and
