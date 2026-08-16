@@ -7,6 +7,7 @@
   * [Kustomize workshop](https://github.com/mtumilowicz/kustomize-workshop)
   * [GitOps and Flux workshop](https://github.com/mtumilowicz/gitops-flux-workshop)
 * [Spring Boot external configuration](https://docs.spring.io/spring-boot/reference/features/external-config.html)
+* [Jib Gradle plugin](https://github.com/GoogleContainerTools/jib/tree/master/jib-gradle-plugin)
 * [Kubernetes ConfigMaps](https://kubernetes.io/docs/concepts/configuration/configmap/)
 * [Kubernetes Secrets](https://kubernetes.io/docs/concepts/configuration/secret/)
 
@@ -127,11 +128,7 @@ the base and makes a missing overlay override fail during Pod startup.
 ## Workshop constraints
 
 * the application logs the configured tokens to make the delivery path observable
-* disposable age private identities are committed to keep the workshop self-contained
-* the committed identities provide no confidentiality
-* production systems must not log secrets or store private identities in Git
-* SOPS protects values in Git; plaintext still exists in the Kubernetes Secret,
-  container environment and application process
+* production applications must not log secrets
 
 ## Local run
 
@@ -147,11 +144,8 @@ SPRING_PROFILES_ACTIVE=local \
 ## Integration test
 
 * requires Docker Desktop Kubernetes, `kubectl`, Flux and the `docker-desktop` context
-* builds the application image directly in Docker Desktop
-* applies the dev and prod Flux connection resources
+* Jib builds the application image directly in Docker Desktop without a Dockerfile
 * verifies each profile and its external configuration through startup logs
-* removes the reconciliations, sources and application namespaces after execution
-* exercises committed Git state; uncommitted manifest changes are not visible to Flux
 
 ```bash
 ./gradlew test

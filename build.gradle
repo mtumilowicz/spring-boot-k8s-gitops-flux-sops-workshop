@@ -2,6 +2,7 @@ plugins {
     id 'java'
     id 'org.springframework.boot' version '4.1.0'
     id 'io.spring.dependency-management' version '1.1.7'
+    id 'com.google.cloud.tools.jib' version '3.5.4'
 }
 
 group = 'com.mtumilowicz'
@@ -24,35 +25,33 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 
-tasks.named('bootJar') {
-    archiveFileName = 'spring-boot-k8s-gitops-flux-sops-workshop.jar'
-}
-
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
 }
 
-tasks.register('dockerBuildImage', Exec) {
-    group = 'verification'
-    description = 'Builds the local Docker image used by Docker Desktop Kubernetes tests.'
-    dependsOn tasks.named('bootJar')
+def dockerExecutable = 'docker'
+def dockerDesktopExecutable = file('/Applications/Docker.app/Contents/Resources/bin/docker')
+if (dockerDesktopExecutable.exists()) {
+    dockerExecutable = dockerDesktopExecutable.absolutePath
+}
 
-    def dockerExecutable = 'docker'
-    def dockerDesktopExecutable = file('/Applications/Docker.app/Contents/Resources/bin/docker')
-    if (dockerDesktopExecutable.exists()) {
-        dockerExecutable = dockerDesktopExecutable.absolutePath
+jib {
+    from {
+        image = 'eclipse-temurin:21-jre'
     }
-
-    commandLine dockerExecutable,
-            'build',
-            '--tag',
-            'spring-boot-k8s-gitops-flux-sops-workshop:latest',
-            '--tag',
-            'spring-boot-k8s-gitops-flux-sops-workshop:1.0.0',
-            '.'
+    to {
+        image = 'spring-boot-k8s-gitops-flux-sops-workshop:latest'
+        tags = ['1.0.0']
+    }
+    container {
+        ports = ['8080']
+    }
+    dockerClient {
+        executable = dockerExecutable
+    }
 }
 
 tasks.named('test') {
-    dependsOn tasks.named('dockerBuildImage')
+    dependsOn tasks.named('jibDockerBuild')
     systemProperty 'project.root', projectDir.absolutePath
 }
