@@ -12,18 +12,23 @@
 * [Kubernetes Secrets](https://kubernetes.io/docs/concepts/configuration/secret/)
 
 ## Workshop
+* integrates the concepts from the prerequisite workshops with a Spring Boot application
+* externalizes one shared `application.yml` from the application artifact
+* supplies environment-specific secrets without encrypting non-sensitive configuration
 
-* purpose
-  * integrates the concepts from the prerequisite workshops with a Spring Boot application
-  * externalizes one shared `application.yml` from the application artifact
-  * supplies environment-specific secrets without encrypting non-sensitive configuration
-  * verifies the complete path from desired state to typed Spring Boot properties
-* scope
-  * focuses on the boundaries between Spring Boot, Kubernetes, Kustomize, Flux and SOPS
-  * assumes familiarity with each deployment tool from the prerequisite workshops
-  * does not introduce additional secret-management or GitOps concepts
+## Configuration model
 
-## Configuration delivery
+Application configuration has two independent concerns:
+
+* shared, non-sensitive values belong in an external configuration file
+* environment-specific secrets belong in a separate secret source
+
+The application artifact must not contain either concern. The same artifact can
+then run in every environment. Spring Boot combines the external sources at
+runtime. Environment variables have higher precedence than values from
+`application.yml`, so secret values can replace placeholders in the shared file.
+
+This repository implements the model as follows:
 
 ```text
 gitops/base/application.yml
@@ -42,17 +47,15 @@ external file and secret overrides
   -> DemoTokenProperties
 ```
 
-* `gitops/base/application.yml` is the only Spring Boot configuration file
-* its default document is a prod-shaped template with `<to_be_replaced>` values
-* its `local` profile document provides local token values
-* Kustomize stores it in a ConfigMap shared by dev and prod
-* the Deployment mounts the ConfigMap at `/config/application.yml`
-* `SPRING_CONFIG_ADDITIONAL_LOCATION=file:/config/` adds the mounted directory to
-  Spring Boot's configuration search locations
-* each overlay contains a SOPS-encrypted Secret with only its token values
-* `secretKeyRef` exposes those values as `DEMO_TOKEN1` and `DEMO_TOKEN2`
-* `DemoTokenProperties` provides the typed application boundary for the
-  `demo` configuration namespace
+* `gitops/base/application.yml` contains the shared configuration
+* its default document contains `<to_be_replaced>` token values
+* its `local` profile document contains local token values
+* the base mounts the generated ConfigMap at `/config/application.yml`
+* `SPRING_CONFIG_ADDITIONAL_LOCATION=file:/config/` adds that directory to
+  Spring Boot's configuration locations
+* each overlay supplies its encrypted token values through a Kubernetes Secret
+* `secretKeyRef` exposes the values as `DEMO_TOKEN1` and `DEMO_TOKEN2`
+* `DemoTokenProperties` binds the resolved `demo` configuration namespace
 
 Spring Boot converts a canonical property name to an environment-variable name
 by:
@@ -70,8 +73,6 @@ Environment variables have higher precedence than `application.yml`.
 `DEMO_TOKEN1` and `DEMO_TOKEN2` therefore override the corresponding
 `<to_be_replaced>` values before `DemoTokenProperties` is bound.
 
-The Secret values are not written into the mounted `application.yml`:
-
 ```text
 Kubernetes Secret key demo-token1
   -> container environment variable DEMO_TOKEN1
@@ -79,13 +80,8 @@ Kubernetes Secret key demo-token1
   -> DemoTokenProperties.token1
 ```
 
-Spring Boot combines the mounted file and the container environment as property
-sources. The environment has higher precedence, so the resolved Spring property
-contains the Secret value while `/config/application.yml` remains unchanged and
-still contains `<to_be_replaced>`.
-
-The application image contains no `application.yml`. The same external file and
-image are used in both environments; only the profile and Secret differ.
+The Secret values are not written to `/config/application.yml`. The mounted file
+retains its placeholders.
 
 ## Environment model
 
