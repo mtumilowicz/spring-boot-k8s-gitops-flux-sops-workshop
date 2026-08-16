@@ -16,72 +16,27 @@
 * externalizes one shared `application.yml` from the application artifact
 * supplies environment-specific secrets without encrypting non-sensitive configuration
 
-## Configuration model
-
-Application configuration has two independent concerns:
-
-* shared, non-sensitive values belong in an external configuration file
-* environment-specific secrets belong in a separate secret source
-
-The application artifact must not contain either concern. The same artifact can
-then run in every environment. Spring Boot combines the external sources at
-runtime. Environment variables have higher precedence than values from
-`application.yml`, so secret values can replace placeholders in the shared file.
-
-This repository implements the model as follows:
-
-```text
-gitops/base/application.yml
-  -> Kustomize-generated ConfigMap
-  -> /config/application.yml
-  -> Spring Boot external configuration
-
-environment secret.enc.yaml
-  -> Flux and SOPS decryption
-  -> Kubernetes Secret
-  -> DEMO_TOKEN1 and DEMO_TOKEN2
-  -> Spring Boot environment overrides
-
-external file and secret overrides
-  -> @ConfigurationProperties
-  -> DemoTokenProperties
-```
-
-* `gitops/base/application.yml` contains the shared configuration
-* its default document contains `<to_be_replaced>` token values
-* its `local` profile document contains local token values
-* the base mounts the generated ConfigMap at `/config/application.yml`
-* `SPRING_CONFIG_ADDITIONAL_LOCATION=file:/config/` adds that directory to
-  Spring Boot's configuration locations
-* each overlay supplies its encrypted token values through a Kubernetes Secret
-* `secretKeyRef` exposes the values as `DEMO_TOKEN1` and `DEMO_TOKEN2`
-* `DemoTokenProperties` binds the resolved `demo` configuration namespace
-
-Spring Boot converts a canonical property name to an environment-variable name
-by:
-
-1. replacing `.` with `_`
-2. removing `-`
-3. converting the result to uppercase
-
-```text
-demo.token1 -> DEMO_TOKEN1
-demo.token2 -> DEMO_TOKEN2
-```
-
-Environment variables have higher precedence than `application.yml`.
-`DEMO_TOKEN1` and `DEMO_TOKEN2` therefore override the corresponding
-`<to_be_replaced>` values before `DemoTokenProperties` is bound.
-
-```text
-Kubernetes Secret key demo-token1
-  -> container environment variable DEMO_TOKEN1
-  -> Spring property demo.token1
-  -> DemoTokenProperties.token1
-```
-
-The Secret values are not written to `/config/application.yml`. The mounted file
-retains its placeholders.
+## repository structure
+* shared configuration
+  * `gitops/base/application.yml` contains the shared configuration
+  * its default document contains `<to_be_replaced>` token values
+  * its `local` profile document contains local token values
+  * the base generates a ConfigMap and mounts it at `/config/application.yml`
+  * `SPRING_CONFIG_ADDITIONAL_LOCATION=file:/config/` adds the mounted file to
+    Spring Boot's configuration locations
+* secret configuration
+  * each overlay contains its encrypted token values in a Kubernetes Secret
+  * `secretKeyRef` exposes the values as `DEMO_TOKEN1` and `DEMO_TOKEN2`
+  * the mounted `application.yml` retains its placeholder values
+* property binding
+  * Spring Boot converts canonical property names to environment-variable names
+    * replaces `.` with `_`
+    * removes `-`
+    * converts the result to uppercase
+  * `demo.token1` maps to `DEMO_TOKEN1`
+  * `demo.token2` maps to `DEMO_TOKEN2`
+  * the environment variables override the corresponding `<to_be_replaced>` values
+  * `DemoTokenProperties` binds the resolved `demo` configuration namespace
 
 ## Environment model
 
