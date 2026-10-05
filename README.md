@@ -63,8 +63,21 @@
           port: 8080
     ```
 
-  * when mounted at `/app/config`, the entry becomes
-    `/app/config/application.yml` inside the container
+  * mount the ConfigMap in the application container
+
+    ```yaml
+    # Deployment fragment: inside spec.template.spec
+    containers:
+      - name: application
+        volumeMounts:
+          - name: configuration
+            mountPath: /app/config # application.yml appears at /app/config/application.yml
+            readOnly: true
+    volumes:
+      - name: configuration
+        configMap:
+          name: orders-config # read the entries from this ConfigMap
+    ```
 * Secret: credentials and other sensitive configuration
   * example: a readable input manifest with a sample password
 
@@ -75,7 +88,7 @@
       name: database-credentials
     type: Opaque
     stringData:
-      spring.datasource.password: example-password
+      spring.datasource.password: example-password # sample only; committing a real plaintext password is unsafe
     ```
 
   * `stringData` accepts plaintext; Kubernetes stores it under `data` using base64
@@ -89,7 +102,8 @@
     * restrict file permissions and mount the volume only in containers that need it
   * file delivery does not protect secrets from a compromised application
   * this workshop uses environment variables to demonstrate Spring Boot overrides
-  * alternative: mount the Secret above and let Spring Boot read its entry as a property
+  * file delivery is an alternative to supplying the password as an environment variable
+    * example: mount `Secret/database-credentials` and import its files with `configtree:`
 
     ```yaml
     # Deployment fragment: inside spec.template.spec
@@ -97,19 +111,17 @@
       - name: application
         env:
           - name: SPRING_CONFIG_IMPORT
-            value: "configtree:/run/secrets/" # filenames become property names
+            value: "configtree:/run/secrets/" # Spring Boot reads each filename as a property name
         volumeMounts:
           - name: credentials
-            mountPath: /run/secrets
+            mountPath: /run/secrets # creates /run/secrets/spring.datasource.password in this container
             readOnly: true
     volumes:
       - name: credentials
         secret:
-          secretName: database-credentials
+          secretName: database-credentials # file contents supply spring.datasource.password
     ```
 
-  * Kubernetes creates `/run/secrets/spring.datasource.password` inside the container
-  * Spring Boot reads that file's contents as the `spring.datasource.password` value
   * volume contents can update, but Spring Boot does not automatically reload properties
 
 ### Spring Boot configuration sources
@@ -137,9 +149,28 @@
   3. Operating-system environment variables.
   4. External profile files, such as `application-prod.yml`.
   5. External common files, such as `application.yml`.
-  6. Profile files packaged in the application.
-  7. Common files packaged in the application.
+  6. Profile files included with the application, for example
+     `src/main/resources/application-prod.yml`, loaded when `prod` is active.
+      * files under `src/main/resources` become classpath resources during the build
+        * in an executable JAR, these files are inside the JAR
+        * external configuration can override these packaged values without rebuilding it
+  7. Common files included with the application, for example
+     `src/main/resources/application.yml`, loaded regardless of the active profile.
   8. Defaults set through `SpringApplication.setDefaultProperties`.
+
+* programmatic defaults: provide a fallback when deployment configuration omits a property
+  * example: suppress the startup banner unless an operator explicitly enables it
+
+    ```java
+    public static void main(String[] args) {
+        SpringApplication application = new SpringApplication(OrdersApplication.class);
+        application.setDefaultProperties(Map.of("spring.main.banner-mode", "off"));
+        application.run(args);
+    }
+    ```
+
+  * YAML, environment variables or command-line arguments can override that fallback
+  * example: `--spring.main.banner-mode=console` enables the banner for troubleshooting
 
 ### Loading an external file
 
@@ -153,6 +184,8 @@
 
 * `SPRING_CONFIG_ADDITIONAL_LOCATION` is an environment variable understood by Spring Boot
 * `file:/app/config/` tells Spring Boot to search the `/app/config/` directory
+  * this location does not recursively search subdirectories
+  * `file:/app/config/*/` includes immediate child directories, not all nested directories
 * Spring Boot loads `/app/config/application.yml` in addition to its default locations
 * if the configured directory is missing, startup fails
   * if the directory is intentionally optional, use
@@ -188,8 +221,16 @@
   * convert to uppercase
   * examples: `client.api-key` → `CLIENT_APIKEY`;
     `spring.main.log-startup-info` → `SPRING_MAIN_LOGSTARTUPINFO`
-* with `CLIENT_APIKEY=environment-example-key`, `client.api-key` resolves to
-  `environment-example-key`, even when the `local` profile is active
+* example: launch the application with the local YAML document and a separate API key
+
+  ```bash
+  SPRING_PROFILES_ACTIVE=local \
+  CLIENT_APIKEY=environment-example-key \
+  java -jar orders.jar
+  ```
+  
+  * the environment variable overrides `client.api-key: local-example-key` in YAML
+  * `local` selects a YAML document; environment-variable precedence applies to every profile
   * the file still contains `<supplied-externally>` and `local-example-key`
   * Spring Boot combines configuration sources in memory; it never injects the
     environment-variable value into the YAML file
@@ -204,20 +245,15 @@
     ```
 
   * Spring Boot binds `client.endpoint` to `endpoint` and `client.api-key` to `apiKey`
-  * with the local profile and environment variable above, the injected record contains
-
-    ```java
-    // Constructor example: Spring injects the configured ClientProperties instance.
-    public ApiClient(ClientProperties properties) {
-        this.endpoint = properties.endpoint(); // http://localhost:9000
-        this.apiKey = properties.apiKey();     // environment-example-key
-    }
-    ```
 
 ### SOPS with bases and overlays
 
-* keep shared non-sensitive configuration in the base
-* keep each environment's credentials in its overlay
+* keep the shared `application.yml` in the base
+  * include common settings and markers for values that overlays must supply
+  * markers are ordinary values; they require overrides and validation
+* keep environment-specific settings in overlays
+  * examples: service URLs, replica counts, image tags and credentials
+  * use ConfigMaps for non-sensitive settings and SOPS-encrypted Secrets for credentials
 * encrypt the Secret values with SOPS before committing them
   * example before encryption: `stringData.password: example-password`
   * example committed to Git after encryption
@@ -253,18 +289,18 @@
     port: 8080
   ```
 
-* reason: edit the YAML file once; Kustomize inserts its contents into the ConfigMap
-  * the output still contains those contents under `data.application.yml`
-  * the generator saves maintaining a second copy by hand
+* `configMapGenerator` reads `config/application.yml` and creates a ConfigMap
+  * the source is an ordinary Spring Boot YAML file
+  * the generated ConfigMap stores the whole file as the string value of `data.application.yml`
+  * `configMapGenerator` = automatically created ConfigMap with `application.yml`
+    * in particular: no copy-pasting of `application.yaml` into `ConfigMap` manifest is required
 * `kustomization.yaml`
 
   ```yaml
-  resources:
-    - deployment.yaml # include the Deployment so Kustomize can update its reference
   configMapGenerator:
     - name: orders-config
       files:
-        # key=source-path: source contents become the value of this ConfigMap key
+        # key=source-path: source content become the value of this ConfigMap key
         - application.yml=config/application.yml
   ```
 
@@ -276,7 +312,7 @@
   metadata:
     name: orders-config-<content-hash>
   data:
-    application.yml: |
+    application.yml: | # content of config/application.yml
       server:
         port: 8080
   ```
@@ -306,6 +342,18 @@
               configMap: # 2. create files from ConfigMap entries
                 name: orders-config # Kustomize adds the generated hash here
     ```
+
+* include the Deployment in the build so Kustomize can update its ConfigMap reference
+  * add this section to the `kustomization.yaml` containing `configMapGenerator`
+
+    ```yaml
+    resources:
+      - deployment.yaml # the consumer of orders-config belongs to this build
+    ```
+
+  * the generator creates the ConfigMap without this section
+  * `resources` includes the Deployment; it is not an input to ConfigMap generation
+  * including a base that contains the Deployment also satisfies this requirement
 
 ### `secretGenerator`
 
@@ -371,8 +419,47 @@
 
 ### Generator placement and configuration changes
 
-* shared generator: define it in the base; each overlay build includes it
-* environment-specific generator: define it in the relevant overlay
+* a generator is a `configMapGenerator` or `secretGenerator` entry in `kustomization.yaml`
+  * it declares the resource name and the files or values used to create the resource
+* for a shared application file, keep the file and generator declaration in the base
+  * `base/application.yml` contains the shared configuration
+  * `base/kustomization.yaml`
+
+    ```yaml
+    resources:
+      - deployment.yaml # references orders-config without a hash
+    configMapGenerator:
+      - name: orders-config
+        files:
+          - application.yml # read base/application.yml
+    ```
+
+  * `overlays/dev/kustomization.yaml`
+
+    ```yaml
+    resources:
+      - ../../base # builds the base resources and its ConfigMap generator
+    ```
+
+  * the overlay inherits the generator declaration; it need not repeat that declaration
+* if an environment needs a different complete file, replace the generated ConfigMap in its overlay
+  * put the environment's complete configuration in `overlays/dev/application.yml`
+  * `overlays/dev/kustomization.yaml`
+
+    ```yaml
+    resources:
+      - ../../base
+    configMapGenerator:
+      - name: orders-config # same resource name as the base generator
+        behavior: replace
+        files:
+          - application.yml # read overlays/dev/application.yml instead
+    ```
+
+  * this replaces the ConfigMap contents; it does not merge properties inside the YAML file
+* the generated object and its consumer must be included in the same Kustomize build
+  * their declarations can be in one `kustomization.yaml` or in included bases
+  * Kustomize cannot rewrite a Deployment applied separately outside that build
 * generated names contain a hash derived from the configuration contents
   * illustrative build output before a configuration change
 
@@ -381,7 +468,7 @@
     metadata:
       name: orders-config-abc123
     ---
-    # Deployment fragment: Kustomize rewrites the reference to match
+    # Deployment included through resources in the same build: Kustomize updates its reference
     spec:
       template:
         spec:
@@ -420,7 +507,10 @@
     token2: "local-workshop-token2"
   ```
 
-* Kubernetes deployments use Secret environment variables to override the markers
+* Kubernetes can supply environment variables from either ConfigMaps or Secrets
+  * ConfigMaps supply non-sensitive settings; Secrets supply sensitive values
+  * Spring Boot gives both the same environment-variable precedence over YAML values
+  * this repository uses Secret environment variables to override the token markers
 * local development activates `local` to use the sample values without Kubernetes
 * Spring Boot validates `DemoTokenProperties` during configuration binding
   * `spring-boot-starter-validation` supplies Jakarta Bean Validation
