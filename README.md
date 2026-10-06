@@ -76,7 +76,7 @@
     volumes:
       - name: configuration
         configMap:
-          name: orders-config # read the entries from this ConfigMap
+          name: orders-config # each data key becomes a filename; its value becomes the file contents
     ```
 * Secret: credentials and other sensitive configuration
   * example: a readable input manifest with a sample password
@@ -111,18 +111,27 @@
       - name: application
         env:
           - name: SPRING_CONFIG_IMPORT
-            value: "configtree:/run/secrets/" # Spring Boot reads each filename as a property name
+            value: "configtree:/run/secrets/" # 3. import files as properties: filename = name, contents = value
         volumeMounts:
           - name: credentials
-            mountPath: /run/secrets # creates /run/secrets/spring.datasource.password in this container
+            mountPath: /run/secrets # 2. expose the files inside this container
             readOnly: true
     volumes:
       - name: credentials
         secret:
-          secretName: database-credentials # file contents supply spring.datasource.password
+          secretName: database-credentials # 1. each Secret data entry becomes a file
     ```
 
   * volume contents can update, but Spring Boot does not automatically reload properties
+    * restart the application to load the updated values
+    * restarting the Deployment creates new containers that load those values
+
+      ```bash
+      kubectl -n <namespace> rollout restart deployment/<deployment-name>
+      kubectl -n <namespace> rollout status deployment/<deployment-name>
+      ```
+
+    * file updates alone do not restart containers
 
 ### Spring Boot configuration sources
 
@@ -158,20 +167,6 @@
      `src/main/resources/application.yml`, loaded regardless of the active profile.
   8. Defaults set through `SpringApplication.setDefaultProperties`.
 
-* programmatic defaults: provide a fallback when deployment configuration omits a property
-  * example: suppress the startup banner unless an operator explicitly enables it
-
-    ```java
-    public static void main(String[] args) {
-        SpringApplication application = new SpringApplication(OrdersApplication.class);
-        application.setDefaultProperties(Map.of("spring.main.banner-mode", "off"));
-        application.run(args);
-    }
-    ```
-
-  * YAML, environment variables or command-line arguments can override that fallback
-  * example: `--spring.main.banner-mode=console` enables the banner for troubleshooting
-
 ### Loading an external file
 
 * example: `/app/config/application.yml` exists on the machine running the application
@@ -187,6 +182,20 @@
   * this location does not recursively search subdirectories
   * `file:/app/config/*/` includes immediate child directories, not all nested directories
 * Spring Boot loads `/app/config/application.yml` in addition to its default locations
+* to load an external profile file, select its directory and activate the profile
+
+  ```bash
+  # File outside the application: /app/config/application-prod.yml
+  SPRING_CONFIG_ADDITIONAL_LOCATION=file:/app/config/ \
+  SPRING_PROFILES_ACTIVE=prod \
+  java -jar orders.jar
+  ```
+
+  * the directory setting controls where Spring Boot searches; it does not activate profiles
+  * with `prod` active, Spring Boot loads `application.yml` and `application-prod.yml`, if present
+  * with no active profile, Spring Boot uses `default` and searches for
+    `application.yml` and `application-default.yml`
+  * packaged configuration files follow the same profile rules but need no external directory
 * if the configured directory is missing, startup fails
   * if the directory is intentionally optional, use
     `SPRING_CONFIG_ADDITIONAL_LOCATION=optional:file:/app/config/`
